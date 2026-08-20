@@ -45,7 +45,6 @@ input LotMode AddLotMode = MULTIPLY_LOT; // kiểu tăng lot: cố định / nh�
 input double LotMultiplier = 2.0; // hệ số nhân lot khi chọn MULTIPLY_LOT
 input double LotAddStep = 0.01; // số lot cộng thêm khi chọn ADD_LOT
 
-input double SL_Gia = 0; // SL cố định theo giá, 0 là tắt
 input double TrailStart_Gia = 3; // lời bao nhiêu giá thì bắt đầu dời SL
 input double TrailLock_Gia = 1; // khi bắt đầu trailing thì khóa lời bao nhiêu giá
 
@@ -71,42 +70,16 @@ input double AI_MultiplierLevel3 = 1.5; // multiplier mức 3
 input int    MaxBuyPositions = 12; // số lệnh BUY tối đa
 input int    MaxSellPositions = 12; // số lệnh SELL tối đa
 
-input bool   EnableBasketTakeProfit = true; // bật/tắt quản lý chùm lệnh theo tổng lợi nhuận
-input bool   EnableBasketBuy = true; // cho phép kiểm tra chùm BUY
-input bool   EnableBasketSell = true; // cho phép kiểm tra chùm SELL
-
 input bool   EnableMaxLossClose = true; // bật/tắt cắt lỗ tổng
 input double MaxLossClose_USD = 30000.0; // âm bao nhiêu USD thì đóng toàn bộ lệnh
 input bool   StopEA_AfterMaxLoss = true; // sau khi cắt lỗ tổng thì dừng bot
-input bool   EnableDailyProfitStop = true; // bật/tắt dừng bot khi đạt lãi ngày
-input double DailyProfitTarget_USD = 8000.0; // đạt lãi ngày bao nhiêu USD thì dừng bot
-input bool   CloseAllAtDailyProfit = true; // đạt lãi ngày thì đóng toàn bộ lệnh
-
-input bool   EnableBasketTrailing = true; // bật/tắt trailing theo tổng lợi nhuận
-double BasketTrailStart_USD = 200.0;
-double BasketTrailLock_USD = 100.0;
-input int    BasketLevel1Positions = 2;      // đạt cấp độ 1 bao nhiêu lệnh
-input double BasketLevel1Start_USD = 100.0;  // cấp 1 lời bao nhiêu USD thì bắt đầu khóa lãi
-input double BasketLevel1Lock_USD  = 50.0;  // cấp 1 tụt khỏi đỉnh bao nhiêu USD thì đóng
-
-input int    BasketLevel2Positions = 8;      // đạt cấp độ 2 bao nhiêu lệnh
-input double BasketLevel2Start_USD = 200.0; // cấp 2 lời bao nhiêu USD thì bắt đầu khóa lãi
-input double BasketLevel2Lock_USD  = 100.0;  // cấp 2 tụt khỏi đỉnh bao nhiêu USD thì đóng
-int BasketStartBuyPositions = 8;
-int BasketStartSellPositions = 8;
-
-input double MaxGridStop_Gia = 100; // đạt max lệnh rồi đi ngược thêm bao nhiêu giá thì cắt toàn bộ
-input bool   StopEA_AfterMaxGrid = true; // sau khi cắt do max grid thì dừng bot
+input bool   EnableTotalProfitStepClose = true; // bật/tắt clear lệnh theo profit tổng từng mốc
+input double TotalProfitStep_USD = 100.0; // cứ lãi thêm bao nhiêu USD thì clear toàn bộ
 
 input int    AddCooldownSeconds = 3; // thời gian chờ tối thiểu giữa 2 lần vào lệnh
 input double MaxSpread_Gia = 0.4; // spread tối đa cho phép vào lệnh, tính theo giá
 
 input int    MagicNumber = 20260506; // mã magic để bot nhận diện lệnh của mình
-string AllowedBroker1 = "DBG Markets Limited";
-string AllowedServer1 = "DBGMarkets-Live";
-
-string AllowedBroker2 = "Dupoin Markets Ltd";
-string AllowedServer2 = "DupoinMarkets-Real";
 
 
 // ===== TELEGRAM =====
@@ -133,8 +106,6 @@ bool     CloseInProgress       = false;
 bool     CloseStopEA           = false;
 string   CloseReason           = "";
 double   CloseTriggerProfit    = 0;
-double   CloseHighestProfit    = 0;
-double   CloseLockProfit       = 0;
 
 datetime CloseHistoryFrom        = 0;
 ulong LastCloseRequestMilliseconds = 0;
@@ -152,39 +123,10 @@ datetime lastBarTime   = 0;
 datetime lastTradeExecution = 0;
 
 bool EmergencyStop = false;
-int basketBuyStart;
-int basketSellStart;
-double highestBasketProfit = 0;
-bool basketTrailingActive = false;
-double currentBasketLockUSD = 0;
 bool tradeTimeStopped = false;
 int lastTradeTimeDay = -1;
-int lastDailyProfitStopDay = -1;
-
-bool IsExpired()
-{
-   datetime expiryDate = D'2027.07.30 23:59';
-
-   datetime nowTime = TimeCurrent();
-
-   if(nowTime > expiryDate)
-   {
-      Alert("EA has expired. Please contact ☎0818221989/0987505469📊");
-      Print("EA EXPIRED: ", TimeToString(expiryDate, TIME_DATE | TIME_MINUTES));
-      return true;
-   }
-
-   return false;
-}
-
-bool IsAllowedAccount()
-{
-   return true;
-}
-bool IsAllowedBrokerServer()
-{
-   return true;
-}
+datetime totalProfitSessionStart = 0;
+int totalProfitStepCount = 0;
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -201,44 +143,11 @@ closeTrade.SetExpertMagicNumber(MagicNumber);
 closeTrade.SetDeviationInPoints(CloseDeviationPoints);
 closeTrade.SetTypeFillingBySymbol(_Symbol);
 closeTrade.SetAsyncMode(true);
-ENUM_ACCOUNT_MARGIN_MODE marginMode =
-   (ENUM_ACCOUNT_MARGIN_MODE)
-   AccountInfoInteger(ACCOUNT_MARGIN_MODE);
-
-if(marginMode != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
-{
-   Print(
-      "ERROR: EA requires a HEDGING account."
-   );
-
-   Alert(
-      "EA này cần tài khoản MT5 Hedging."
-   );
-
-   return INIT_FAILED;
-}
    
 
    EmergencyStop = false;
-
-basketBuyStart =
-   BasketStartBuyPositions;
-
-basketSellStart =
-   BasketStartSellPositions;
-
-// ===== validate =====
-if(basketBuyStart > MaxBuyPositions)
-{
-   basketBuyStart =
-      MaxBuyPositions;
-}
-
-if(basketSellStart > MaxSellPositions)
-{
-   basketSellStart =
-      MaxSellPositions;
-}
+   totalProfitSessionStart = TimeCurrent();
+   totalProfitStepCount = 0;
 
 SendTelegram("Báo cáo các Sếp EA MAYCAY đã được gắn thành công");
 EventSetTimer(1);
@@ -254,8 +163,6 @@ void OnTick()
    if(ProcessCloseAllPositions())
       return;
 
-   CheckDailyProfitStopReset();
-
    CheckTradeTime();
 
    if(ProcessCloseAllPositions())
@@ -270,13 +177,7 @@ void OnTick()
    if(ProcessCloseAllPositions())
       return;
 
-   if(CheckDailyProfitStop())
-      return;
-
-   if(ProcessCloseAllPositions())
-      return;
-
-   if(CheckBasketTakeProfit())
+   if(CheckTotalProfitStepClose())
       return;
 
    if(ProcessCloseAllPositions())
@@ -408,91 +309,63 @@ return true;
 
    return false;
 }
-   
-void CheckDailyProfitStopReset()
+
+bool CheckTotalProfitStepClose()
 {
-   if(lastDailyProfitStopDay == -1)
-      return;
-
-   MqlDateTime jst;
-   TimeToStruct(TimeGMT() + 9 * 3600, jst);
-
-   if(lastDailyProfitStopDay != jst.day_of_year)
-   {
-      EmergencyStop = false;
-      lastDailyProfitStopDay = -1;
-
-      Print("DAILY PROFIT STOP RESET - NEW DAY");
-   }
-}
-
-bool CheckDailyProfitStop()
-{
-   if(!EnableDailyProfitStop)
+   if(!EnableTotalProfitStepClose)
       return false;
 
-   if(DailyProfitTarget_USD <= 0)
+   if(TotalProfitStep_USD <= 0)
       return false;
 
-   // Đã đạt target trong ngày thì tiếp tục dừng bot
-   if(lastDailyProfitStopDay != -1)
-      return true;
+   if(!HasAnyPosition())
+      return false;
 
-   datetime fromTime = GetBotSessionStart();
-   datetime toTime   = TimeCurrent();
+   if(totalProfitSessionStart <= 0)
+      totalProfitSessionStart = TimeCurrent();
 
    double closedProfit =
-      GetClosedProfit(fromTime, toTime);
+      GetClosedProfit(totalProfitSessionStart, TimeCurrent());
 
    double floatingProfit =
       GetTotalProfit();
 
-   double totalDailyProfit =
+   double totalProfit =
       closedProfit + floatingProfit;
 
-   if(totalDailyProfit < DailyProfitTarget_USD)
+   double nextTarget =
+      TotalProfitStep_USD * (totalProfitStepCount + 1);
+
+   if(totalProfit < nextTarget)
       return false;
 
+   int reachedStep =
+      (int)MathFloor(totalProfit / TotalProfitStep_USD);
+
+   if(reachedStep <= totalProfitStepCount)
+      reachedStep = totalProfitStepCount + 1;
+
+   totalProfitStepCount = reachedStep;
+
    Print(
-      "DAILY PROFIT TARGET HIT: ",
-      totalDailyProfit
+      "TOTAL PROFIT STEP HIT. Step=",
+      totalProfitStepCount,
+      " Target=",
+      nextTarget,
+      " Closed=",
+      closedProfit,
+      " Floating=",
+      floatingProfit,
+      " Total=",
+      totalProfit
    );
 
-   MqlDateTime jst;
-   TimeToStruct(TimeGMT() + 9 * 3600, jst);
-
-   lastDailyProfitStopDay =
-      jst.day_of_year;
-
-   // Có lệnh đang chạy và yêu cầu đóng toàn bộ
-   if(CloseAllAtDailyProfit && HasAnyPosition())
-   {
-      StartCloseAllPositions(
-         "DAILY PROFIT TARGET CLOSED",
-         true,
-         totalDailyProfit
-      );
-
-      return true;
-   }
-
-   // Không có lệnh cần đóng hoặc người dùng không chọn đóng lệnh
-   EmergencyStop = true;
-
-   SendTelegram(
-      "ĐẠT MỤC TIÊU LÃI NGÀY\n"
-      + "Lãi đã chốt: "
-      + DoubleToString(closedProfit, 2)
-      + " USD\n"
-      + "Lãi lệnh đang chạy: "
-      + DoubleToString(floatingProfit, 2)
-      + " USD\n"
-      + "Tổng lãi ngày: "
-      + DoubleToString(totalDailyProfit, 2)
-      + " USD\n"
-      + "Mục tiêu: "
-      + DoubleToString(DailyProfitTarget_USD, 2)
-      + " USD"
+   StartCloseAllPositions(
+      "TOTAL PROFIT STEP "
+      + IntegerToString(totalProfitStepCount)
+      + " CLOSED",
+      false,
+      totalProfit
    );
 
    return true;
@@ -699,31 +572,6 @@ void CheckAddPosition()
          {
             double distance =
    NormalizeDouble(lastBuyPrice - bid, _Digits);
-            // =====================================================
-            // BUY OVER GRID STOP
-            // =====================================================
-
-            if(buyCount >= MaxBuyPositions)
-            {
-               double overDistance =
-   NormalizeDouble(lastBuyPrice - bid, _Digits);
-
-if(overDistance >= MaxGridStop_Gia)
-{
-   Print(
-      "EMERGENCY STOP BUY. Distance=",
-      overDistance
-   );
-
-   StartCloseAllPositions(
-      "MAX GRID STOP BUY CLOSED",
-      StopEA_AfterMaxGrid,
-      GetTotalProfit()
-   );
-
-   return;
-}
-            }
 
             if(distance >= dynamicAddStep)
             {
@@ -794,32 +642,6 @@ if(overDistance >= MaxGridStop_Gia)
          {
             double distance =
    NormalizeDouble(ask - lastSellPrice, _Digits);
-   
-            // =====================================================
-            // SELL OVER GRID STOP
-            // =====================================================
-
-            if(sellCount >= MaxSellPositions)
-            {
-                  double overDistance =
-   NormalizeDouble(ask - lastSellPrice, _Digits);
-
-if(overDistance >= MaxGridStop_Gia)
-{
-   Print(
-      "EMERGENCY STOP SELL. Distance=",
-      overDistance
-   );
-
-   StartCloseAllPositions(
-      "MAX GRID STOP SELL CLOSED",
-      StopEA_AfterMaxGrid,
-      GetTotalProfit()
-   );
-
-   return;
-}
-            }
 
             if(distance >= dynamicAddStep)
             {
@@ -872,14 +694,6 @@ bool OpenBuy(string reason, double customLot = -1)
 
    double sl = 0;
    double tp = 0;
-
-   if(SL_Gia > 0)
-{
-   sl = NormalizeDouble(price - SL_Gia, _Digits);
-
-   if(sl <= 0)
-      sl = 0;
-}
 
 double stopLevel =
    SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
@@ -934,14 +748,6 @@ bool OpenSell(string reason, double customLot = -1)
 
    double sl = 0;
    double tp = 0;
-
-   if(SL_Gia > 0)
-{
-   sl = NormalizeDouble(price + SL_Gia, _Digits);
-
-   if(sl <= 0)
-      sl = 0;
-}
 
 double stopLevel =
    SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point;
@@ -1107,140 +913,6 @@ double GetTotalProfit()
    }
 
    return totalProfit;
-}
-double GetDynamicBasketTrailStart(double totalProfit)
-{
-   int buyCount  = CountBuyPositions();
-   int sellCount = CountSellPositions();
-
-   int positionCount = 0;
-
-   if(EnableBasketBuy)
-      positionCount = MathMax(positionCount, buyCount);
-
-   if(EnableBasketSell)
-      positionCount = MathMax(positionCount, sellCount);
-
-   // Cấp 2 nếu đủ số lệnh HOẶC profit đạt mức cấp 2
-   if(positionCount >= BasketLevel2Positions ||
-      totalProfit >= BasketLevel2Start_USD)
-      return BasketLevel2Start_USD;
-
-   if(positionCount >= BasketLevel1Positions)
-      return BasketLevel1Start_USD;
-
-   return 0;
-}
-double GetDynamicBasketTrailLock(double totalProfit)
-{
-   int buyCount  = CountBuyPositions();
-   int sellCount = CountSellPositions();
-
-   int positionCount = 0;
-
-   if(EnableBasketBuy)
-      positionCount = MathMax(positionCount, buyCount);
-
-   if(EnableBasketSell)
-      positionCount = MathMax(positionCount, sellCount);
-
-   // Cấp 2 nếu đủ số lệnh HOẶC profit đạt mức cấp 2
-   if(positionCount >= BasketLevel2Positions ||
-      totalProfit >= BasketLevel2Start_USD)
-      return BasketLevel2Lock_USD;
-
-   if(positionCount >= BasketLevel1Positions)
-      return BasketLevel1Lock_USD;
-
-   return BasketTrailLock_USD;
-}
-
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-bool CheckBasketTakeProfit()
-{
-   if(!EnableBasketTakeProfit)
-      return false;
-
-   if(!HasAnyPosition())
-   {
-      basketTrailingActive = false;
-      highestBasketProfit = 0;
-      currentBasketLockUSD = 0;
-
-      return false;
-   }
-
-   double totalProfit = GetTotalProfit();
-
-   double dynamicTrailStart =
-      GetDynamicBasketTrailStart(totalProfit);
-
-   if(dynamicTrailStart <= 0)
-      return false;
-
-   // =====================================================
-   // START BASKET TRAILING
-   // =====================================================
-   if(
-      EnableBasketTrailing &&
-      !basketTrailingActive &&
-      totalProfit >= dynamicTrailStart
-   )
-   {
-      basketTrailingActive = true;
-      highestBasketProfit = totalProfit;
-
-      currentBasketLockUSD =
-         GetDynamicBasketTrailLock(totalProfit);
-
-      Print(
-         "BASKET TRAILING START. Profit=",
-         totalProfit,
-         ", LockDistance=",
-         currentBasketLockUSD
-      );
-   }
-
-   // =====================================================
-   // UPDATE VÀ KIỂM TRA BASKET TRAILING
-   // =====================================================
-   if(basketTrailingActive)
-   {
-      if(totalProfit > highestBasketProfit)
-      {
-         highestBasketProfit = totalProfit;
-      }
-
-      double lockProfit =
-         highestBasketProfit
-         - currentBasketLockUSD;
-
-      if(totalProfit <= lockProfit)
-      {
-         Print(
-            "BASKET TRAILING HIT. Trigger=",
-            totalProfit,
-            ", Highest=",
-            highestBasketProfit,
-            ", Lock=",
-            lockProfit
-         );
-
-         StartCloseAllPositions(
-            "BASKET TRAILING CLOSED",
-            false,
-            totalProfit,
-            highestBasketProfit,
-            lockProfit
-         );
-
-         return true;
-      }
-   }
-
-   // Bắt buộc phải nằm ngoài if(basketTrailingActive)
-   return false;
 }
 //+------------------------------------------------------------------+
 double GetLastPositionPrice(long type)
@@ -1521,14 +1193,12 @@ int FastCloseAllPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Bắt đầu quá trình đóng toàn bộ basket                            |
+//| Bắt đầu quá trình đóng toàn bộ lệnh                               |
 //+------------------------------------------------------------------+
 void StartCloseAllPositions(
    string reason,
    bool stopEA,
-   double triggerProfit,
-   double highestProfit = 0,
-   double lockProfit = 0
+   double triggerProfit
 )
 {
    if(CloseInProgress)
@@ -1539,15 +1209,11 @@ void StartCloseAllPositions(
    CloseReason = reason;
 
    CloseTriggerProfit = triggerProfit;
-   CloseHighestProfit = highestProfit;
-   CloseLockProfit = lockProfit;
 
    CloseHistoryFrom = TimeCurrent();
    CloseStartMilliseconds = GetTickCount64();
    CloseNoPositionMilliseconds = 0;
    LastCloseRequestMilliseconds = 0;
-
-   basketTrailingActive = false;
 
    // Gửi yêu cầu đóng ngay, chưa Telegram
    FastCloseAllPositions();
@@ -1638,22 +1304,6 @@ string message =
    + " USD\n";
    
 
-   if(CloseHighestProfit != 0)
-   {
-      message +=
-         "Highest Profit: "
-         + DoubleToString(CloseHighestProfit, 2)
-         + " USD\n";
-   }
-
-   if(CloseLockProfit != 0)
-   {
-      message +=
-         "Lock Profit: "
-         + DoubleToString(CloseLockProfit, 2)
-         + " USD\n";
-   }
-
    message +=
       "Lãi/lỗ thực tế sau khi đóng: "
       + DoubleToString(realizedProfit, 2)
@@ -1666,10 +1316,6 @@ string message =
       + " giây";
 
    Print(message);
-
-   basketTrailingActive = false;
-   highestBasketProfit = 0;
-   currentBasketLockUSD = 0;
 
    if(CloseStopEA)
    {
@@ -1698,8 +1344,6 @@ string message =
    CloseReason = "";
 
    CloseTriggerProfit = 0;
-   CloseHighestProfit = 0;
-   CloseLockProfit = 0;
 
    CloseHistoryFrom = 0;
    LastCloseRequestMilliseconds = 0;
@@ -1822,24 +1466,6 @@ datetime GetBotSessionEnd()
    }
 
    return GetJSTDateTime(StopHour_JST, StopMinute_JST, 0);
-}
-
-datetime GetJSTStartOfDay()
-{
-   datetime jstNow =
-      TimeGMT() + 9 * 3600;
-
-   MqlDateTime dt;
-   TimeToStruct(jstNow, dt);
-
-   dt.hour = 0;
-   dt.min  = 0;
-   dt.sec  = 0;
-
-   datetime jstStart =
-      StructToTime(dt);
-
-   return jstStart - 9 * 3600;
 }
 
 datetime GetJSTStartOfWeek()
